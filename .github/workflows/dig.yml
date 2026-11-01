@@ -1,0 +1,78 @@
+name: dig
+
+# Parallel PoW nonce search for the Chip404 free mint (BSC).
+# Hash: keccak256(salt || wallet || nonce) needs >= bits leading zero bits.
+# Salt and wallet are public on-chain data; nothing secret lives here.
+# Each matrix job scans an interleaved partition (offset + chunk*4, stride chunks*4);
+# the winning job exits early and uploads found.txt.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bits:
+        description: "Leading zero bits required (weightNow on chain)"
+        required: true
+        default: "36"
+      chunks:
+        description: "How many parallel jobs"
+        required: true
+        default: "20"
+      offset:
+        description: "Base nonce offset added to every partition"
+        required: true
+        default: "0"
+
+env:
+  SALT: "445aa0838438a376563c290a2c15cf7ddea0883854555b68b0e01efefafff39a"
+  WALLET: "757B2d9D9e0E456B080d671596Af184CA758eC9a"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          n = int("${{ inputs.chunks }}")
+          print("matrix=" + json.dumps({"chunk": list(range(n))}))
+          EOF
+
+  dig:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: gcc -O3 -march=native -pthread -o solver2 solver2.c
+      - name: Self-test
+        run: |
+          ./solver2 --test "$SALT" "$WALLET" | tee test.log
+          grep -q "3aae4333589750d8e637262e38e5838a2d9a869ad7cd7ab92d100797c9e69997" test.log
+          grep -q "a84cf489abca3349075e8c0507105dfdefe103faefbdee21cd46a01ea9df0012" test.log
+      - name: Search partition
+        run: |
+          START=$(( ${{ inputs.offset }} + ${{ matrix.chunk }} * 4 ))
+          GSTRIDE=$(( ${{ inputs.chunks }} * 4 ))
+          echo "partition start=$START gstride=$GSTRIDE bits=${{ inputs.bits }}"
+          set +e
+          timeout 2700 ./solver2 "$SALT" "$WALLET" "${{ inputs.bits }}" 4 300 "$START" "$GSTRIDE" | tee dig.log
+          grep '^FOUND' dig.log > found.txt || true
+          if [ -s found.txt ]; then echo "FOUND in this partition:"; cat found.txt; fi
+          exit 0
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chip-chunk-${{ matrix.chunk }}
+          path: |
+            found.txt
+            dig.log
+          if-no-files-found: ignore
