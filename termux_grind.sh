@@ -32,3 +32,19 @@ echo "Kalau muncul baris 'FOUND nonce=...' — screenshot & kirim ke Muse SEGERA
 termux-wake-lock 2>/dev/null || true
 # stride 32: thread lokal terpisah dari partisi armada GitHub
 ./solver2 "$SALT" "$WALLET" "$BITS" "$THREADS" 30 "$OFFSET" 32 2>&1 | tee grind-phone.log
+
+# Notifikasi otomatis ke agen bila FOUND. Nonce terikat ke wallet agen
+# (hash = keccak(salt||wallet||nonce)) — disiarkan pun aman, hanya wallet
+# agen yang bisa memakainya, dan agen memverifikasi ulang sebelum bertindak.
+NTFY="https://ntfy.sh/chip404found-9398f7e3679a3e7c"
+if grep -q "FOUND nonce=" grind-phone.log 2>/dev/null; then
+  LINE="$(grep "FOUND nonce=" grind-phone.log | tail -1)"
+  echo "Mengirim notifikasi FOUND ke agen..."
+  for i in 1 2 3 4 5; do
+    if curl -s --max-time 15 -H "Title: Chip404 FOUND" -d "phone $LINE" "$NTFY" >/dev/null; then
+      echo "Notifikasi terkirim. Agen akan memverifikasi & menyiapkan mint."
+      break
+    fi
+    sleep 5
+  done
+fi
